@@ -5,6 +5,40 @@ from skimage.draw import disk
 from skimage.transform import resize,radon, iradon, iradon_sart
 import matplotlib.pyplot as plt
 
+
+@st.cache_data
+def compute_sinogram(img_true, angles, step, add_noise, I0=100000):
+
+    theta = np.arange(0,angles,step)
+    # create sinogram
+    sinogram = radon(img_true, theta=theta)
+    
+    if not add_noise:
+        return sinogram, theta
+    # 1. Normalize
+    m = np.max(sinogram)
+    if m > 0:
+        P = sinogram / m
+    else:
+        P = sinogram
+    
+    # 2. Physics: Convert to photon counts (Beer-Lambert Law)
+    counts = I0 * np.exp(-P)
+    
+    # 3. Add Poisson noise (Random photon arrival)
+    noisy_counts = np.random.poisson(counts).astype(float)
+    
+    # 4. Clean up zeros (you can't take log of 0)
+    noisy_counts[noisy_counts <= 0] = 1e-6
+    
+    # 5. Convert back to sinogram (Linear Attenuation)
+    sinogram = np.log(I0 / noisy_counts)
+    sinogram = sinogram * m
+    return sinogram, theta
+    
+
+
+
 # Set layout to wide to accommodate three columns comfortably
 st.set_page_config(layout="wide", page_title="CT Reconstruction Lab")
 
@@ -55,37 +89,18 @@ with col2:
     st.subheader("Sinogram")
     
     with st.expander("Projections Settings", expanded=True):
+        #angles & step
         angles = st.number_input("Number of Angles", min_value=1, max_value=360, value=180)
         step = st.number_input("Step Size (Degrees)", min_value=0.1, max_value=10.0, value=1.0)
-        
         # Add noise
         add_noise = st.checkbox("Add Poisson Noise")
-        # angles
-        theta = np.arange(0,angles,step)
-        # create sinogram
-        sinogram = radon(img_true, theta=theta)
-
         if add_noise:
             I0 = st.select_slider("X-ray Intensity (Dose)", [10, 100, 1000, 10000, 100000])
-            # 1. Normalize
-            m = np.max(sinogram)
-            if m > 0:
-                P = sinogram / m
-            else:
-                P = sinogram
-            
-            # 2. Physics: Convert to photon counts (Beer-Lambert Law)
-            counts = I0 * np.exp(-P)
-            
-            # 3. Add Poisson noise (Random photon arrival)
-            noisy_counts = np.random.poisson(counts).astype(float)
-            
-            # 4. Clean up zeros (you can't take log of 0)
-            noisy_counts[noisy_counts <= 0] = 1e-6
-            
-            # 5. Convert back to sinogram (Linear Attenuation)
-            sinogram = np.log(I0 / noisy_counts)
-            sinogram = sinogram * m
+            sinogram, theta = compute_sinogram(img_true=img_true, angles=angles, add_noise=True, step=step, I0=I0)
+        else:
+            sinogram, theta = compute_sinogram(img_true=img_true, angles=angles, add_noise=False, step=step, I0=None)
+
+
         #save to session state
         st.session_state.sinogram = sinogram
         st.session_state.theta = theta
@@ -141,7 +156,6 @@ with col3:
             rec = np.zeros((N,N))
             n_projections = len(theta)
 
-            progress_bar = st.progress(0) #progress bar
             for i in range(n_iter):
                 # forward project of our current guess
                 sino_guess = radon(rec, theta=theta, circle=True)
@@ -154,9 +168,6 @@ with col3:
 
                 # update image
                 rec += (relaxation / n_projections) * error_rec
-
-                #progress bar
-                progress_bar.progress((i + 1) / n_iter)
 
         # Execute SART    
         if algo == "SART":
